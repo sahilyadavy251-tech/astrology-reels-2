@@ -105,18 +105,15 @@ async def host_video(vtype, mp4, cap):
     return "https://%s.github.io/%s/%s" % (OWNER, HOST_REPO, fname)
 
 
-def wait_for_url(url, timeout=240):
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            r = requests.head(url, timeout=20, allow_redirects=True)
-            if r.status_code == 200 and int(r.headers.get("content-length") or 0) > 0:
-                print("URL live: %s" % url)
-                return True
-        except Exception:
-            pass
-        time.sleep(8)
-    return False
+def settle(seconds=75):
+    """GitHub Pages needs a moment after the push.
+
+    The build sandbox cannot reach *.github.io (not on its egress allowlist), so the
+    URL cannot be probed from here - we wait a fixed, generous interval instead and
+    let the container-create retry loop absorb any remaining lag.
+    """
+    print("Pages deploy ka intezaar: %ds" % seconds)
+    time.sleep(seconds)
 
 
 def create_container(creds, caption, video_url):
@@ -198,11 +195,22 @@ async def main():
         print("DRYRUN: host done, Instagram publish skipped")
         return
 
-    if not wait_for_url(url):
-        print("PUBLISH_FAIL: Pages URL live nahi hua - %s" % url)
-        return
+    settle()
 
-    cid = create_container(creds, caption, url)
+    cid = None
+    for attempt in range(3):
+        try:
+            cid = create_container(creds, caption, url)
+            break
+        except SystemExit as e:
+            print("container try %d fail: %s" % (attempt + 1, str(e)[:200]))
+            if attempt == 2:
+                print("PUBLISH_FAIL: container nahi bana - %s" % url)
+                return
+            time.sleep(30)
+    if not cid:
+        print("PUBLISH_FAIL: container id nahi mila")
+        return
     if not wait_ready(creds, cid):
         print("PUBLISH_FAIL: container time out")
         return
